@@ -1,0 +1,955 @@
+---
+title: "TD5_Baptiste_DUFOUR"
+author: "Baptiste Dufour"
+date: '2023-12-30'
+output: 
+  rmdformats::readthedown:
+    theme: united
+    fig_width: 6
+    fig_height: 4
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(123)
+```
+
+
+
+```{r, echo=FALSE}
+#Loading the libraries
+library(fredr)
+library(ggplot2)
+library(TSstudio)
+library(urca) #Contient les diff"érents tests de stationnarity
+library(stats)
+library(forecast)
+library(quantmod)
+```
+
+# Exercice 1 : Data settings
+
+## 1) Data importation
+
+```{r, echo=TRUE}
+fredr_set_key("6e17c533d47a0aa5de126acc5fe81ed9")
+
+chomage_us<-fredr(
+  series_id="UNRATENSA" ,
+  observation_start =as.Date("1948-01-01"),
+  observation_end=as.Date("2023-11-01"),
+  frequency = "m" # monthly
+)
+```
+
+## 2) Ploting and observing
+
+```{r, echo=FALSE}
+chomage_ts=ts(chomage_us$value,start=c(1948,1),frequency=12)  #Creation of a ts serie
+ts_plot(chomage_ts,title="US Unemployment Rate Over Time")  
+
+acf(chomage_ts)
+pacf(chomage_ts,lag=48)
+```
+
+On observe une série cyclique et saisonniaire.
+
+Un **cycle** peut être comparé à une séquence d'événements qui se répètent au fil du temps. Il démarre à un point bas local de la série, atteint son point culminant, puis se termine pour débuter le cycle suivant à ce même point. Contrairement à un motif saisonnier, les cycles ne suivent pas nécessairement des intervalles de temps réguliers, et leur durée peut varier d'un cycle à l'autre.
+
+
+La composante **saisonnière** (ou saisonnalité) est un autre motif fréquent dans les données de séries temporelles. Si elle est présente, elle représente une variation répétée dans la série, liée aux unités de fréquence de la série (par exemple, les mois de l'année pour une série mensuelle). Un exemple courant de série présentant un motif saisonnier marqué est la demande d'électricité ou de gaz naturel. Dans ces cas, le motif saisonnier est influencé par divers événements saisonniers tels que les conditions météorologiques, la saison de l'année et les heures d'ensoleillement. De plus, une série peut avoir plus d'un motif saisonnier.
+
+Il y a une partie cyclique, on devine une saisonnalité, mais pas de tendance appparante. On ne peut pas conclure de la stationarite, la condition sur la variance n'est pas forcémement respectée. On voit que la variance dépend du temps autour de 800 observations. 
+
+On rappelle qu'une série est fiablement stationnaire si :
+
+- $E(y_t)$ est indépendante de t
+
+- $Var(y_t)$ est indépendante de t et aussi constante
+
+- $Cov(y_t,y_s)$ dépend de (t-s) et non de t ou s.
+
+On observe également que l'**ACF** décroit lentement, ce qui montre une série avec de la mémoire donc potentiellement non stationnaire. On observe des pics d'autocorrelation réguliers. 
+
+De même avec la **PACF**, qui a un pic très fort au lag 1 ce qui explique la décroissance lente de l'ACF, toute la mémoire dépend du premier paramètre autorégressif. 
+
+On peut donc penser avec toutes ses informations à une saisonnalité additive $y_t=T_t+S_t+c_t+ε_t$ pour une série qui semble persistente et non stationnaire.
+
+Nous pouvons utiliser plusieurs méthodes pour traiter la saisonnalité:
+
+- La **régression linéaire**: On génère des variables indicatrices mensuelles, des dummies et on modélise notre série comme une somme de nos paramètres de régréssion qui sont nos dummies $y_t = t_t + s_t = β_0 + β_1z_{t1} + . . . + β_pz_{tp}$. Cette régression utilise la méthode des moindres carrés qui implique que nos observations sont indépendantes ce qui n'est pas toujours le cas.
+
+
+- **Moyenne mobile**: Une moyenne mobile est une série temporelle construite en prenant la moyenne de plusieurs valeurs séquentielles d'une autre série temporelle. C'est une forme de convolution mathématique. Si l'on représente la série temporelle originale par y1, ..., yn, alors une moyenne mobile à deux côtés de la série temporelle est donnée par
+\[
+z_t = \frac{1}{2q+1}\ + \sum_{j=-q}^{q} y_{t+j} \quad \text{for } t = q+1, q+2, \ldots, n-q
+\]
+De manière similaire, une moyenne mobile à un seul côté de yt est donnée par:
+\[
+z_t = \frac{1}{q+1}\ + \sum_{j=0}^{q} y_{t-j} \quad \text{for } t = q+1, q+2, \ldots, n
+\]
+Les moyennes mobiles sont utilisées de deux manières principales :
+
+1. Les moyennes mobiles à **deux côtés** (pondérées) sont utilisées pour "lisser" une série temporelle afin d'estimer ou mettre en évidence la tendance sous-jacente ;
+2. Les moyennes mobiles à un **seul côté** (pondérées) sont utilisées comme méthodes simples de prévision pour les séries temporelles.
+
+
+- La **différenciation**: Les tendances peuvent être éliminées en différenciant les données. Considérons des données avec une tendance linéaire modélisée par Xt = β0 + β1t + et où et est un processus stationnaire. La différence saisonnière consiste à prendre la différence entre une observation et l'observation précédente de la même saison (mois, trimestre, etc.).
+
+\[y_t' = y_t - y_{t-m}\]
+
+Ici m est le nombre de saisons. Ces différences sont également appelées "différences de retard" car nous soustrayons l'observation après un retard de m périodes. Si les données différenciées saisonnièrement semblent être un bruit blanc, alors un modèle approprié pour les données d'origine est :
+
+\[y_t' - y_{t-m} = ε_t\]
+
+Ici nous allons essayer d'enlever la saisonnalité en utilisant une moyenne mobile ou avec la fonction decompose qui va nous permettre de décomposer notre série en une composante saisonnale et une tendance afin de pouvoir la soustraire à notre série de base.
+
+## 3) Application du filtre
+
+Test de la moyenne mobile
+
+```{r, echo=FALSE}
+chomage_two_side_MA <- ts_ma(chomage_ts,n=5,n_right = 5,n_left=5)
+
+plot(chomage_ts, main = "Chomage", col = "blue", type = "l", ylab = "Consumption")
+lines(chomage_two_side_MA$unbalanced_ma_11, col = "red")
+legend("topleft", legend = c("Chomage US", "Two-sided MA"), col = c("blue", "red"), lty = 1)
+
+chomage_ma=chomage_two_side_MA$unbalanced_ma_11
+ts_plot(chomage_ma,title="US Unemployment Rate Over Time Moving average")
+```
+
+Test de la fonction decompose
+
+```{r, echo=FALSE}
+decomposition <- decompose(chomage_ts)
+plot(decomposition)
+
+saiso <- decomposition$seasonal
+trend=decomposition$trend
+
+chomage_ts_saiso <- chomage_ts - saiso
+
+# Afficher la série temporelle originale et celle sans saison
+ts_plot(chomage_ts_saiso,title="US Unemployment Rate Over Time Decompose")
+```
+
+On peut observer que la moyenne mobile semble avoir mieux réduit la saisonnalité mais ne semble pas non plus l'avoir éliminé.
+
+## 4) Test du filtre
+
+```{r, echo=FALSE}
+acf(chomage_ma)
+pacf(chomage_ma,lag=48)
+```
+
+L'ACF décroit toujours lentement et le premier coef de la PACF n'a pas changé.
+On peut donc penser que la série n'est toujours pas stationnaire.
+On va vérifier cela avec un test de stationnarité, ici le test ADF.
+
+```{r, echo=FALSE}
+test=ur.df(chomage_ma,type="none",selectlags="BIC") 
+summary(test)
+```
+
+La statistique du test est de -1.1141, ce qui n'est pas inférieur à la valeur critique pour 5% de -1.95, on ne peut donc pas rejeter le test et donc on conserve le fait que la série **n'est pas stationnaire**.
+
+On ne peut donc pas modéliser cette série sous la forme d'un ARMA(p,q).
+
+# Exercice 2 : Unit Root tests
+
+
+On peut constater que les données ajustées saisonnièrement (ou filtrées) montrent toujours un schéma cyclique. Nous devons caractériser ce schéma, c'est-à-dire déterminer si la série temporelle est stationnaire ou non, et quelle est la nature de la non-stationnarité le cas échéant.
+
+## 1) Explication du test ADF
+
+Le test **Augmented Dickey-Fuller** est utile pour déterminer la stationnarité d'une série. On pose π = ϕˆ− 1
+
+- Hyptohèse du test:
+Ho: π=0, la série est non stationnaire 
+
+H1: π<0, la série est stationnaire.
+
+Le test ADF est basé sur les trois équations:
+
+\[▽y_t= πy_{t-1}+ \sum_{i=2}^{p} \gamma_i \Delta y_{t-i+1} + u_t \]
+
+\[▽y_t=  β_1 + πy_{t-1}+ \sum_{i=2}^{p} \gamma_i \Delta y_{t-i+1} + u_t \]
+
+\[▽y_t=  β_1 + β_2t + πy_{t-1}+ \sum_{i=2}^{p} \gamma_i \Delta y_{t-i+1} + u_t \]
+
+La différence entre ces équations de test concerne l'inclusion des coefficients β1 et β2, où, sous l'hypothèse nulle, la première équation se réfère à un modèle de marche aléatoire pure, la deuxième équation inclut un terme d'intercept ou de drift, et la dernière équation inclut à la fois un drift et une tendance linéaire dans le temps. Dans chaque cas, le paramètre d'intérêt est π, et si π = 0, alors le processus yt contient une racine unitaire. 
+
+La comparaison du t-statistique calculé avec les valeurs critiques des tables de Dickey-Fuller détermine si nous devons rejeter ou non l'hypothèse nulle, H0 : π = 0
+
+Nous allons maintenant montrer un exemple de ce test avec une marche aléatoire.
+
+```{r, echo=TRUE}
+yt=cumsum(rnorm(100))
+test=ur.df(yt,type="none",selectlags="BIC") 
+summary(test)
+```
+
+On observe une valeur de la statistique bien au dessus de la valeur critique ce qui est logique comme cela représente une marche aléatoire donc une série non stationnaire.
+
+Maintenant, testons avec la différentiation de cette série.
+
+```{r, echo=FALSE}
+test=ur.df(diff(yt,lag=1),type="none",selectlags="BIC") 
+summary(test)
+```
+
+On observe ici une statistique bien inférieure à celle de la valeur critique donc cela montre bien une série stationnaire.
+
+## 2) Différentiation de la série 
+
+Nous avons précedemment réaliser le test ADF sur notre série, ce qui a montré la non stationnarité. Nous allons maintenant essayer de différencier notre série pour la rendre stationnaire.
+
+```{r, echo=TRUE}
+chomage_diff=diff(chomage_ma,lag=12,differences=1)
+ts.plot(chomage_diff, main = "Chomage")
+test=ur.df(chomage_diff,type="none",selectlags="BIC") 
+summary(test)
+```
+
+On observe ici une statistique de test de -12 largement inférieur à la valeur critique donc on rejette Ho et on considère la série comme stationnaire.
+
+## 3) Degré d'intégration de la série
+
+Le **degré d'intégration** d'une série est le nombre de différences nécessaire pour rendre la série stationnaire.
+
+On observe que après avoir différencier la série à l'ordre 1, la série est stationnaire. 
+
+On en déduit donc que le degré d'intégration de la série est de 1. 
+
+## 4) Test de Philips and Perron
+
+Le test de Philips et Perron est semblable au test de Augmented Dickey Fuller par ses hypothèses mais est un test plus paramétrique et un correctif est appliquée sur la variance estimée des résidus.
+
+```{r, echo=TRUE}
+pp_test <- ur.pp(chomage_diff)
+summary(pp_test)
+```
+
+On observe que la p-value est très faible, ce qui indique que l'on rejette Ho donc la série est stationnaire. Cela concorde avec le test de ADF réalisé précedemment.
+
+## 5) Test de KPSS
+
+Le test de KPSS est également utilisé pour déterminer si une série est stationnaire mais varie par ses hypothèses.
+
+- Ho: La série est stationnaire
+- H1: La série n'est pas stationnaire.
+
+En comparant la valeur du test-statistic avec les valeurs critiques :
+
+Si la valeur du test-statistic est inférieure à la valeur critique correspondant à un certain niveau de signification, on ne peut pas rejeter l'hypothèse nulle. Cela suggère que la série temporelle est stationnaire.
+
+Si la valeur du test-statistic est supérieure à la valeur critique, on peut rejeter l'hypothèse nulle, indiquant que la série temporelle n'est pas stationnaire.
+
+```{r, echo=TRUE}
+kpss_test <- ur.kpss(chomage_ma,type='tau')
+summary(kpss_test)
+```
+
+Pour notre série trouvé dans l'exercice 1 avant différentiation, la valeur du test-statistic est supérieure aux valeurs critiques. On peut donc rejeter l'hypothèse nulle de stationnarité. Cela suggère que la série temporelle peut être considérée comme non stationnaire.
+
+## 6) Degré d'intégration KPSS
+
+Nous allons maintenant procéder au même test mais après différentiation à l'ordre 1.
+
+```{r, echo=TRUE}
+kpss_test <- ur.kpss(chomage_diff,type='tau')
+summary(kpss_test)
+```
+
+Ici la valeur du test-statistic est inférieure aux valeurs critiques. On ne peut donc pas rejeter l'hypothèse nulle de stationnarité. Cela suggère que la série temporelle peut être considérée comme stationnaire.
+
+Cela valide notre hypothèse que le degré d'intégration de la série est 1.
+
+# Exercice 3 : Modeling
+
+## 1) Proposer un model ARMA(p,q)
+
+Il existe deux types de méthodes pour identifier l'ordre du processus ARMA. Le premier repose sur les informations provenant de l'ACF et du PACF (autocorrélation partielle). À titre de rappel, l'ACF est utilisée pour évaluer l'ordre d'un processus MA(q), tandis que la PACF est employée pour déterminer l'ordre d'un processus AR(p). La deuxième méthode consiste à utiliser des **critères d'information**.
+
+Un critère d'information mesure la qualité d'ajustement du modèle en attribuant un coût informationnel au nombre de paramètres à estimer.
+
+Les critères d'information intègrent deux facteurs :
+
+1. Un terme qui est une fonction de la somme résiduelle des carrés ;
+2. Un terme qui pénalise la perte de degrés de liberté due à l'ajout de paramètres supplémentaires.
+
+**L'objectif est donc de choisir le nombre de paramètres qui minimise la valeur du critère d'information.**
+
+Le critère d'information d'Akaike (AIC), le critère d'information bayésien de Schwarz (SBIC) et le critère d'information de Hannan-Quinn (HQIC) sont définis par les relations suivantes :
+
+\[AIC=2k-2ln(\hat L)\]   
+
+\[BIC=k*ln(n)-2ln(\hat L)\] 
+
+\[HQIC=-2\hat L{max}+2k*ln(ln(n))\] 
+
+et où $\hat L$ represente la log vraissemblance, k le nombre de paramètres et n le nombre d'observations.
+
+
+**Méthode empirique** : Nous procédons par balayage, en définissant une plage de valeurs pour p et q, et en calculant les critères d'information pour toutes les combinaisons possibles. Nous sélectionnons ensuite la paire (p, q) qui minimise les critères d'information.
+
+Afin de définir cette plage, nous allons regarder l'ACF et la PACF.
+
+```{r, echo=FALSE}
+acf(chomage_diff,lag=50)
+pacf(chomage_diff)
+```
+
+On observe que l'ACF est en dessous du seuil pour un lag d'environ 4 et la PACF pour un lag d'environ 1 ou 2.
+
+On va donc tester les critères d'information pour des valeurs de p et q allant de 1 à 4.
+
+```{r, echo=FALSE}
+p=1:4
+q=1:4
+n=length(chomage_diff)
+aic_matrix=matrix(0, nrow = length(p), ncol = length(q))
+bic_matrix=matrix(0, nrow = length(p), ncol = length(q))
+qic_matrix=matrix(0, nrow = length(p), ncol = length(q))
+for (i in 1:length(p)) {
+  for (j in 1:length(q)) {
+    model=arima(chomage_diff, order = c(p[i], 1, q[j]))
+    log_likelihood <- logLik(model)
+    k=i+j+1
+    aic_matrix[i,j]=2*k-2*log_likelihood
+    bic_matrix[i,j]=-2 * log_likelihood + k * log(n)
+    qic_matrix[i,j]=-2*log_likelihood+2*k*log(log(n))
+  }
+}
+aic_matrix
+bic_matrix
+qic_matrix
+min_index_aic <- which(aic_matrix == min(aic_matrix), arr.ind = TRUE)
+min_index_bic <- which(bic_matrix == min(bic_matrix), arr.ind = TRUE)
+min_index_qic <- which(qic_matrix == min(qic_matrix), arr.ind = TRUE)
+
+AIC_p <- p[min_index_aic[1]]
+AIC_q <- q[min_index_aic[2]]
+BIC_p <- p[min_index_bic[1]]
+BIC_q <- q[min_index_bic[2]]
+QIC_p <- p[min_index_qic[1]]
+QIC_q <- q[min_index_qic[2]]
+print(paste("Optimal AIC - p:", AIC_p, "q:", AIC_q))
+print(paste("Optimal BIC - p:", BIC_p, "q:", BIC_q))
+print(paste("Optimal QIC - p:",QIC_p, "q:", QIC_q))
+
+
+```
+
+
+On trouve des critères d'information optimals pour p valant 3 et q valant 2. On va donc estimer un model ARMA(3,2)
+
+```{r, echo=FALSE}
+predicted_model <- arima(chomage_ts, order = c(3, 1, 2))
+predicted_model
+plot(chomage_ts, type = "l", col = "blue", ylab = "Unemployment Rate", xlab = "Time",main="Observed Vs Predicted Values")
+lines(fitted(predicted_model), col = "red")
+legend("topleft", legend = c("Observed", "Predicted Values"), col = c("blue", "red"), lty = 1)
+
+```
+
+
+## 2) Tests de qualité des résidus
+
+Pour assurer la validité du model, on va devoir réaliser plusieurs tests de qualité. 
+
+**Distribution Normale des Résidus** :
+
+L'affirmation selon laquelle les résidus suivent une distribution normale est cruciale pour la validité du modèle de régression linéaire. Cette hypothèse garantit que les erreurs sont impartiales et constantes à travers différents niveaux de la variable prédictive.
+L'histogramme offre une représentation visuelle de la distribution des résidus. Un histogramme en forme de cloche, ressemblant à une distribution normale, suggère que les erreurs du modèle sont réparties symétriquement autour de zéro, renforçant la fiabilité du modèle.
+Le graphique quantile-quantile (Q-Q) est un autre outil de diagnostic qui compare la distribution des résidus à une distribution normale attendue. Un motif diagonal dans le graphique Q-Q indique que les résidus s'alignent étroitement avec une distribution normale. Le test de Shapiro est également utile pour déterminer si les résidus suivent une distribution normale.
+
+**Absence d'Autocorrélation** :
+
+L'autocorrélation dans les résidus implique que les erreurs à un moment donné sont corrélées avec les erreurs à d'autres moments, indiquant potentiellement que le modèle n'a pas capturé de manière adéquate les motifs temporels.
+Le test de Ljung-Box évalue l'absence d'autocorrélation dans les résidus sur différents intervalles de décalage. Une valeur p non significative dans ce test indique que les autocorrélations ne sont pas statistiquement différentes de zéro, soutenant l'absence d'autocorrélation.
+Le graphique de la fonction d'autocorrélation (ACF) offre une représentation visuelle des autocorrélations à différents intervalles de décalage. Une diminution rapide des valeurs d'autocorrélation suggère que les résidus n'expriment pas de motif significatif au fil du temps.
+
+Nous connaissons différents tests d'autocorrélation:
+
+**Test de Ljung-Box** : La fonction d'autocorrélation (ACF) et la fonction d'autocorrélation partielle (PACF) sont des outils qualitatifs utiles pour évaluer la présence d'autocorrélation à des retards individuels. Le test Q de Ljung-Box est une approche plus quantitative pour tester l'autocorrélation à plusieurs retards simultanément. L'hypothèse nulle de ce test est que les premières m autocorrélations sont conjointement nulles, H0 : ρ1 = ρ2 = . . . , = ρm = ρm = 0 En d'autres termes :
+
+H0 : Il n'y a pas d'autocorrélation dans les données H1 : Il existe une autocorrélation significative
+
+La formule de ce test est :
+
+\[ Q = n(n+2) \sum_{k=1}^{h} \frac{\hat{\rho}_k^2}{n-k} \]
+
+Si la **p-value > 5%**, nous ne pouvons pas rejeter H0 à 95%.
+
+Si la **p-value < 5%**, nous pouvons rejeter H0 à 95% et affirmer qu'il existe une autocorrélation significative dans les données.
+
+Le test de **Box-Pierce** : test statistique utilisé pour évaluer la présence d'autocorrélation dans une série temporelle. Il s'agit d'un cas spécifique du test de Ljung-Box, plus général. Les deux tests sont couramment utilisés pour le diagnostic de modèles dans l'analyse des séries temporelles.
+La statistique de test de Box-Pierce est calculée comme :
+
+\[ Q = n \sum_{k=1}^{h} \hat{\rho}_k^2 \]
+
+Les hypothèses pour le test de Box-Pierce sont identiques à celles du test de Ljung-Box :
+
+H0 : Il n'y a pas d'autocorrélation dans les données
+H1 : Il existe une autocorrélation significative
+
+Le test de **Durbin-Watson** : Alternative au test de Ljung-Box. Il s'agit d'une statistique de test utilisée pour détecter la présence d'autocorrélation au décalage 1 dans les résidus (erreurs de prédiction) d'une analyse de régression. Durbin et Watson ont proposé un test basé sur une mesure de la distance entre les erreurs en i et en i − 1.
+
+Si $e_t$ Les résidus donnés par $e_t=ρe_{t-1}+vt$, le test de Durbin-Watson est:
+
+\[ d = \frac{\sum_{t=2}^{n} (ê_t - ê_{t-1})^2}{\sum_{t=1}^{n} ê_t^2} \] où T est le nombre d'observations.
+
+Cette statistique peut être exprimée approximativement pour de grandes valeurs de T en fonction du coefficient d'autocorrélation des résidus, noté généralement ρ.  $d ∼ 2(1 − ρ)$
+
+Le test peut donc être interprété comme suit :
+
+Si **ρ = 0** (c'est-à-dire **aucune autocorrélation**), alors **d** est proche de **2**.
+Si **ρ = 1** (c'est-à-dire **autocorrélation positive**), alors **d** est proche de **0**.
+Si **ρ = −1** (c'est-à-dire **autocorrélation négative**), alors **d** est proche de **4**.
+
+Ainsi, la statistique de Durbin-Watson varie de **0 à 4**. **Une valeur autour de 2 suggère l'absence d'autocorrélation**, tandis que des **valeurs significativement inférieures à 2 indiquent une autocorrélation positive**, et des **valeurs significativement supérieures à 2 indiquent une autocorrélation négative**.
+
+**Homoscédasticité**
+
+Afin de se rendre compte si les résidus sont **homoscédastiques**, à variance constante, on va prendre les résidus et les élevés au ². On aura donc une approximation de la volatilité. Ensuite on regarde **l'ACF ou la PACF**. Une deuxième méthode serait d'estimer un model AR sur sur ε² et regarder les paramètres du modèle. Si les résidus sont homoscedastiques, alors les **paramètres devraient être environ de 0**, si les résidus sont **heteroscedastiques, les paramètres seraient différents de 0**.  
+
+**Stationnarité**
+
+Nous devons également regarder la stationnarité des résidus. Pour cela, nous allons réaliser le test d'ADF, présenté précedemment.
+
+Si toutes ces conditions sont respectées, on peut ainsi valider notre model.
+
+```{r, echo=FALSE}
+residuals_model <- residuals(predicted_model)
+residuals_2=residuals_model*residuals_model
+
+hist(residuals_model, main = "Histogram of Residuals")
+qqnorm(residuals_model)
+qqline(residuals_model)
+# Shapiro-Wilk test for normality
+shapiro.test(residuals_model)
+```
+
+On observe que notre histogramme ne semble pas correspondre exactement à celui d'une loi normale mais les quantiles de nos résidus semblent s'approcher de ceux d'une loi normale.
+De même, le test de shapiro affiche une p-value très faible donc on rejette le fait que les résidus se comportent comme une loi normale.
+
+```{r, echo=FALSE}
+Box.test(residuals_model,lag=5, type = "Ljung-Box")
+acf(residuals_model,main="Autocorrelation of the residuals")
+```
+
+On observe une p-value supérieure à 5% pour le test de Ljung-Box, on peut donc conserver l'hypothèse d'absence d'autocorrélation de nos résidus, cela est également vérifier avec l'ACF qui se rapproche très rapidement de 0.
+
+```{r, echo=FALSE}
+test_residuals=ur.df(residuals_model,type="none",selectlags="BIC") 
+summary(test_residuals)
+```
+
+on observe que la statistique du test de ADF est très faible, environ -22, largement inférieure à la valeur critique, on peut donc rejeter Ho et dire que notre série des résidus est stationnaire.
+
+```{r, echo=FALSE}
+acf(residuals_2,main="Autocorrelation of the residuals ²")
+pacf(residuals_2,main="Partial Autocorrelation of the residuals ²")
+model_ar <- ar(residuals_2, order.max = 1)
+model_ar
+```
+
+En estimant un model AR(1) sur les résidus au ², on se rend compte que le coefficient est très proche de 0, on peut donc considérer les résidus comme homoscédastiques.
+
+Malgré le fait que nos résidus ne se comportent pas exactement comme une loi normale, il semble y avoir une absence d'autocorrélation, de la stationnarité, et de l'homoscédasticité, on peut donc valider notre model.
+
+
+# Exercice 4 :  Estimating an ARIMA(p,d,q) 
+
+Comme observé pendant la séance, les modèles ARIMA ont été conçus pour traiter les séries temporelles non stationnaires. Nous proposons d'utiliser ce type de spécification pour modéliser le cours de l'action Johnson & Johnson depuis 1997 jusqu'à présent, sur une base mensuelle.
+
+On commence par charger les données:
+
+```{r, echo=FALSE}
+getSymbols("JNJ", from = "1997-01-01")
+jnj_monthly <- to.monthly(JNJ, indexAt = "firstof", OHLC = FALSE)
+jnj_ts <- ts(jnj_monthly$JNJ.Adjusted, start = c(1997, 1), frequency = 12)
+ts_plot(jnj_ts,title="JNJ Monthly Adjusted Prices")
+```
+
+On observe une série qui comporte plusieurs tendances avec notamment une potentielle coupure vers 200 observations mais pas vraiment de saisonnalité.
+
+## 1) Degré d'intégration
+
+Afin de déterminer le degré d'intération de la série des prix de Johnson & Johnson, nous allons réaliser différents tests d'ADF pour des intégrations différentes. Lorsque la série sera considéré comme stationnaire à un degré I, nous pourrons alors considéré que la série est intégrable à l'ordre I.
+
+```{r, echo=FALSE}
+test=ur.df(jnj_ts,type="trend",selectlags="BIC") 
+summary(test)
+```
+
+On observe une valeur de la statistique de -1.92 ce qui est supérieur à -3.42 la valeur critique de tau3, on ne peut donc pas rejeter Ho et on considère la série comme non  stationnaire.
+
+Nous allons maintenant réaliser de nouveau ce test mais en différenciant la série à l'ordre 1.
+
+```{r, echo=FALSE}
+jnj_diff=diff(jnj_ts,lag=1,differences=1)
+
+adf_test=ur.df(jnj_diff,type="trend",selectlags="BIC") 
+summary(adf_test)
+```
+
+On observe maintenant une statistique de test de -16, ce qui est largement inférieur aux valeurs critiques. On peut donc rejeter Ho et on considère la série stationnaire.
+
+Après une différenciation à l'ordre 1, la série est devenu stationnaire, **le degré d'intégration de la série est donc de 1**.
+
+## 2) Déterminer un model ARIMA
+
+Nous allons maintenant estimer les coefficients p et q grâce aux critères d'informations.
+
+```{r, echo=FALSE}
+p=0:6
+q=0:6
+n=length(jnj_diff)
+aic_matrix=matrix(0, nrow = length(p), ncol = length(q))
+bic_matrix=matrix(0, nrow = length(p), ncol = length(q))
+qic_matrix=matrix(0, nrow = length(p), ncol = length(q))
+for (i in 1:length(p)) {
+  for (j in 1:length(q)) {
+    model=arima(jnj_diff, order = c(p[i], 1, q[j]))
+    log_likelihood <- logLik(model)
+    k=i+j+1
+    aic_matrix[i,j]=2*k-2*log_likelihood
+    bic_matrix[i,j]=-2 * log_likelihood + k * log(n)
+    qic_matrix[i,j]=-2*log_likelihood+2*k*log(log(n))
+  }
+}
+aic_matrix
+bic_matrix
+qic_matrix
+min_index_aic <- which(aic_matrix == min(aic_matrix), arr.ind = TRUE)
+min_index_bic <- which(bic_matrix == min(bic_matrix), arr.ind = TRUE)
+min_index_qic <- which(qic_matrix == min(qic_matrix), arr.ind = TRUE)
+
+AIC_p <- p[min_index_aic[1]]
+AIC_q <- q[min_index_aic[2]]
+BIC_p <- p[min_index_bic[1]]
+BIC_q <- q[min_index_bic[2]]
+QIC_p <- p[min_index_qic[1]]
+QIC_q <- q[min_index_qic[2]]
+print(paste("Optimal AIC - p:", AIC_p, "q:", AIC_q))
+print(paste("Optimal BIC - p:", BIC_p, "q:", BIC_q))
+print(paste("Optimal QIC - p:",QIC_p, "q:", QIC_q))
+```
+
+On observe que BIC est optimal pour p=0 et q=3. 
+On essaye de vérifier ces valeurs avec l'ACF et la PACF.
+
+```{r, echo=FALSE}
+acf(jnj_diff,lag=40,main="Autocorrelation function of J&J stock prices")
+pacf(jnj_diff,main="Partial Autocorrelation function of J&J stock prices")
+```
+
+On observe que la fonction d'autocorrelation a des valeurs différentes de 0 jusqu'au lag 3 environ, ce qui peut se rassembler à un q=3.
+
+La fonction d'autocorrelation partielle elle semble aller vers 0 vers le lag 1.
+
+Les observations de l'ACF et la PACF sont globalement les mêmes que celles avec les critères d'information. On va donc générer un model **ARMA(0,3)** pour modéliser notre série de prix.
+
+
+## 3) Création du model et affichage
+
+```{r, echo=TRUE}
+predicted_model <- arima(jnj_ts, order = c(0, 1, 3))
+predicted_model
+jnj_arma=fitted(predicted_model)
+
+
+plot(jnj_ts, type = "l", col = "blue", ylab = "Stock Price", xlab = "Time",main="Observed Vs Predicted Values")
+lines(fitted(predicted_model), col = "red")
+legend("topleft", legend = c("Observed", "Predicted Values"), col = c("blue", "red", "green"), lty = 1)
+```
+
+On observe que le model semble suivre notre courbe des prix. Le model ARMA(0,3) semble donc potentiellement être bien adapté pour notre série.
+
+## 4) Tests de qualité des résidus
+
+Comme dans l'exercice précédent, nous allons procéder aux tests de qualité: **distribution normale des résidus, absence d'autocorrélation, homoscédasticité et stationnarité**.
+
+```{r, echo=FALSE}
+residuals_model <- residuals(predicted_model)
+residuals_2=residuals_model*residuals_model
+
+hist(residuals_model, main = "Histogram of Residuals")
+qqnorm(residuals_model)
+qqline(residuals_model)
+# Shapiro-Wilk test for normality
+shapiro.test(residuals_model)
+```
+
+On observe que notre histogramme semble correspondre à celui d'une loi normale mais les quantiles extrèmes de nos résidus s'éloignent de ceux d'une loi normale.
+De même, le test de shapiro affiche une p-value très faible donc on rejette le fait que les résidus se comportent comme une loi normale.
+
+```{r, echo=FALSE}
+Box.test(residuals_model, lag=5,type = "Ljung-Box")
+acf(residuals_model,main="Autocorrelation of the residuals")
+```
+
+On observe une p-value supérieure à 5% pour le test de Ljung-Box, on peut donc conserver l'hypothèse d'absence d'autocorrélation de nos résidus, cela est également vérifier avec l'ACF qui se rapproche très rapidement de 0.
+
+```{r, echo=FALSE}
+test_residuals=ur.df(residuals_model,type="none",selectlags="BIC") 
+summary(test_residuals)
+```
+
+on observe que la statistique du test de ADF est très faible, environ -12, largement inférieure à la valeur critique, on peut donc rejeter Ho et dire que notre série des résidus est stationnaire.
+
+```{r, echo=FALSE}
+acf(residuals_2,main="Autocorrelation of the residuals ²")
+pacf(residuals_2,main="Partial Autocorrelation of the residuals ²")
+model_ar <- ar(residuals_2, order.max = 1)
+model_ar
+```
+
+
+En estimant un model AR(1) sur les résidus au ², on se rend compte que le coefficient est très proche de 0, on peut donc considérer les résidus comme homoscédastiques.
+
+Malgré le fait que nos résidus ne se comportent pas exactement comme une loi normale, il semble y avoir une absence d'autocorrélation, de la stationnarité et de l'homoscédasticité, on peut donc valider notre model.
+
+## 4) Prédiction
+
+```{r, echo=FALSE}
+forecast_values <- forecast(predicted_model, h = 3,xlim=)
+plot(forecast_values, main = "Forecast of the J&J stock prices for 3 months with CI")
+plot(forecast_values, main = "Forecast for Next Three Months", xlim = c(2023, 2025))
+forecast_values$lower
+forecast_values$upper
+```
+
+Les tableaux affichent les valeurs inférieures de l'interval de confiance puis les valeurs supérieures.
+
+# Exercice 5 : Unit root test another one 
+
+
+## 1) Présentation du test
+
+Dans cet exercice, nous proposons d'introduire un nouveau test de racine unitaire : le test de Zivot and Andrews (1992). Une des faiblesses des tests de racine unitaire ADF est leur potentiel à confondre les ruptures structurelles dans la série comme des preuves de non-stationnarité. En d'autres termes, ils peuvent échouer à rejeter l'hypothèse de racine unitaire si la série présente une rupture structurelle.
+
+Le test de rupture structurelle endogène de Zivot and Andrews (1992) est un test séquentiel qui utilise l'échantillon complet et utilise une variable factice différente pour chaque date possible de rupture. La date de rupture est sélectionnée là où la statistique t du test ADF de la racine unitaire est minimale (la plus négative). Par conséquent, une date de rupture sera choisie là où les preuves sont les moins favorables pour l'hypothèse de racine unitaire.
+
+Les tests de Zivot-Andrews (1992) énoncent l'hypothèse nulle selon laquelle la série a une racine unitaire avec des ruptures structurelles contre l'hypothèse alternative selon laquelle elles sont stationnaires avec des ruptures. Nous rejetons l'hypothèse nulle si la statistique t est inférieure à la valeur critique tabulée.
+
+## 2) Génération de 3 marches aléatoires
+
+Nous allons générer trois marches aléatoires. La première étant une pure marche aléatoire, la deuxième une marche aléatoire avec une rupture au milieu et la troisième, une marche aléatoire avec une rupture au milieu et dans la tendance. Une quatrième série accentuant les ruptures sera générer. 
+
+```{r, echo=TRUE}
+e=rnorm(1000)
+trd=1:1000
+s=c(rep(0,499),rep(1,501))
+s2=c(rep(0,299),rep(1,701))
+
+y1=cumsum(e)
+y2=s*30+cumsum(e)
+y3=0.1*trd+s2*25+cumsum(e)
+y4=trd*s*0.1+s2*50+cumsum(e)
+
+par(mfrow=c(2, 2))
+plot(y1, type="l", main="Marche aléatoire pure", col="black")
+plot(y2, type="l", main="Marche aléatoire avec rupture au milieu", col="red")
+plot(y3, type="l", main="Marche aléatoire avec rupture au milieu et dans la tendance", col="blue")
+plot(y4, type="l", col="yellow")
+```
+
+```{r, echo=FALSE}
+par(mfrow=c(1, 1))
+```
+
+Afin de réaliser ces marches alatoires, nous avons créer un vecteur de bruits blancs gaussiens ainsi que un vecteur représentant une tendance trd et deux vecteurs qui vont créer des ruptures, s crée une rupture vers 499 et s2 vers 299.
+
+On observe bien sur le graphique une rupture pour y2 en 500 et une pour y3 vers 299 et une dans la trend. On a créer également une série y4 qui accentue cette rupture dans la trend et avant afin de la comparer à y3.
+
+
+## 3) Implémentation du test de Zivot et Andrews
+
+Nous allons maintenant réaliser le test de Zivot et Andrews pour nos différentes séries. Pour cela, nous avons créer une fonction qui va nous permettre de collecter les informations importantes dans une table afin de pouvoir les visualiser. Nous récupérons ainsi la valeur de la statistique, les valeurs critiques et le point de rupture potentiel.
+
+```{r, echo=TRUE}
+zivot_andrews_test <- function(serie, serie_name,model) {
+  za.test <- ur.za(serie, model = model)
+  print(summary(za.test))
+  plot(za.test)
+  test_statistic <- za.test@teststat
+  critical_values <- za.test@cval
+  rupture=za.test@bpoint
+  
+  # Create a summary table
+  summary_table <- data.frame(
+    Series = serie_name,
+    `Test Statistique` = test_statistic,
+    `Valeur critique 1%` = critical_values[1],
+    `Valeur critique 5%` = critical_values[2],
+    `Valeur critique 10%` = critical_values[3],
+    `Point de rupture`=rupture
+  )
+  
+  return(summary_table)
+}
+
+# Perform the test for each series
+summary_y1 <- zivot_andrews_test(y1, "y1","both")
+summary_y2 <-zivot_andrews_test(y2, "y2","both")
+summary_y3 <- zivot_andrews_test(y3, "y3","both")
+summary_y4 <- zivot_andrews_test(y4, "y4","both")
+```
+
+Nous observons pour le test 1 une statistique de test supérieure aux valeurs critiques, on ne peut donc pas rejeter Ho et dire que la série est stationnaire avec une rupture. Cela conserve le fait que la série est une marche aléatoire pure.
+
+Pour le test 2, on observe une statistique de test légèrement inférieure à la valeur critique en 5% en général donc on peut considérer potentiellement une rupture en 499.
+
+Pour la série 3, on observe une potentielle rupture en 299. La série semble non stationnaire sauf s'il existe au point 299, rupture statistique significative. La statistique de test est inférieure à la valeur critique à 5% en général.
+
+Pour la série 4, on observe potentiellement deux ruptures, une en 299 et une en 499, ce qui est également observé par la statistique du test inférieure aux valeurs critiques à 5% en général.
+
+Les valeurs varient selon la marche aléatoire générer.
+
+Le résumé ainsi obtenu des quatres séries est:
+
+```{r, echo=FALSE}
+results <- rbind(summary_y1, summary_y2, summary_y3,summary_y4)
+print(results)
+```
+
+## 4) Test pour Johnson & Johnson
+
+Nous allons maintenant réaliser le test de zivet et andrews sur la data filtré de johnson et johnson.
+
+Il peut être intéressant d'utiliser ce test afin de déterminer des potentielles ruptures dans une série.
+
+```{r, echo=FALSE}
+za.test=ur.za(jnj_arma,model="both",lag=8)
+summary(za.test)
+plot(za.test)
+```
+
+Nous avons réaliser le test sur la série représentant le prix de l'action et observons que aucune rupture significative ne semble se dégager. La statistique du test est supérieure aux valeurs critiques, on ne peut donc pas rejeter Ho.
+
+```{r, echo=FALSE}
+za.test=ur.za(jnj_diff,model="both",lag=8)
+summary(za.test)
+plot(za.test)
+```
+
+Dans un second temps, nous réalisons le test de Zivot et Andrews sur la série différencier des prix de l'action, qui est une série stationnaire.
+
+Nous observons une statistique du test largement inférieure aux valeurs critiques, on peut donc rejeter Ho et dire que la série est stationnaire avec une rupture en 285.
+
+# Exercice 6 : Modeling the business cycle
+
+Sur la base de toutes vos connaissances, proposez la spécification la plus appropriée pour modéliser la dynamique mensuelle de l'écart de crédit aux États-Unis. Les données sont disponibles sur le site web de la Fed de Saint Louis. Vous devez charger les taux d'intérêt annuels des obligations d'entreprise Moody's Seasoned Aaa Corporate Bond et Moody's Seasoned Baa Corporate Bond. L'écart de crédit est la différence entre l'indice Baa et l'indice Aaa.
+
+Réalisez une analyse complète (saisonnalité, stationnarité, modélisation, vérification des résidus et prévision de l'écart de crédit). L'horizon de prévision est fixé à trois mois. L'étude devrait inclure des graphiques illustratifs, des commentaires détaillés et motivés, ainsi que des résultats pertinents.
+
+
+Dans un premier temps, nous allons charger les données à partir de 1950.
+
+```{r, echo=TRUE}
+getSymbols(c("AAA", "BAA"), from="1950-01-01",src = "FRED")
+
+AAA_monthly <- to.monthly(AAA, indexAt = "lastof", OHLC = FALSE)
+AAA_ts=ts(AAA_monthly, start = c(1950, 1), frequency = 12)
+
+BAA_monthly <- to.monthly(BAA, indexAt = "lastof", OHLC = FALSE)
+BAA_ts=ts(BAA_monthly, start = c(1950, 1), frequency = 12)
+
+spread_ts=BAA_ts-AAA_ts
+```
+
+```{r, echo=FALSE}
+ts_plot(AAA_ts,title="AAA Yield")
+ts_plot(BAA_ts,title="BAA Yield")
+ts_plot(spread_ts,title="Spread Yield")
+
+acf(spread_ts,main="Autocorrelation function")
+pacf(spread_ts,main="Partial Autocorrelation function")
+```
+
+On peut observer que le spread est une série ayant plusieurs tendances avec potentiellement une saisonnalité mensuelle. 
+De plus l'ACF de la série semble décroître lentement, cela fait penser à un processus avec mémoire.
+De même avec la PACF, qui a un pic très fort au lag 0 ce qui explique la décroissance lente de l'ACF, toute la mémoire dépend du premier paramètre autorégressif.  
+
+On peut donc penser que cette série est **non stationnaire**.
+
+Afin de se rendre compte de la saisonnalité et des différentes tendances, nous allons utiliser la fonction decompose.
+
+```{r, echo=FALSE}
+decomposition <- decompose(spread_ts)
+plot(decomposition)
+```
+
+Afin de pouvoir enlever cette saisonnalité, nous allons utiliser un filtre de moyenne mobile précedemment décrit.
+
+```{r, echo=FALSE}
+spread_two_side_MA <- ts_ma(spread_ts,n=5,n_right = 5,n_left=5)
+
+plot(spread_ts, main = "Spread", col = "blue", type = "l")
+lines(spread_two_side_MA$unbalanced_ma_11, col = "red")
+legend("topleft", legend = c("Spread", "Two-sided MA"), col = c("blue", "red"), lty = 1)
+
+spread_ma=spread_two_side_MA$unbalanced_ma_11
+ts_plot(spread_ma,title="Spread BAA AAA Overtime without saisonnality")
+acf(spread_ma)
+pacf(spread_ma)
+```
+
+On remarque sur le graphique que l'on a bien réussi à enlever la saisonnalité.
+
+L'ACF décroit toujours lentement et le premier coef de la PACF n'a pas changé.
+On peut donc penser que la série n'est toujours pas stationnaire.
+On va vérifier cela avec un test de stationnarité, ici le test de KPSS.
+
+```{r, echo=FALSE}
+kpss_test <- ur.kpss(spread_ma,type='tau')
+summary(kpss_test)
+```
+
+On remarque ici que la valeur de la statistique est supérieure aux valeurs critiques, on peut donc rejeter Ho et ainsi dire que la série est non stationnaire.
+
+Afin de rendre la série stationnaire, nous allons faire une différentiation avec la fonction diff afin de supprimer les tendances et ensuite de nouveau tester la stationnarité avec le test de kpss et également ADF.
+
+```{r, echo=TRUE}
+spread_diff=diff(spread_ma,differences=1)
+kpss_test <- ur.kpss(spread_diff,type='tau')
+summary(kpss_test)
+
+test=ur.df(spread_diff,type="none",selectlags="BIC") 
+summary(test)
+```
+
+Pour le test de KPSS, on observe une statistique de 0.02, inférieure aux valeurs critiques, on peut donc conserver Ho.
+
+Pour le test d'ADF, on observe une statistique largement inférieure aux valeurs critiques. On peut donc rejeter Ho et dire que la série est **stationnaire**.
+
+Le **degré d'intégration** de la série de spread est donc de **1**.
+
+Nous allons maintenant pouvoir estimer un model ARMA(p,q) pour notre série.
+
+```{r, echo=FALSE}
+acf(spread_diff,lag=60)
+pacf(spread_diff,lag=50)
+```
+
+On observe que l'ACF se rapproche de 0 vers le lag 3 ou 4 et que la PACF se rapproche de 0 vers le lag 3. On va donc vérifier cette hypothèse en calculant les critères d'information pour des valeurs de p et q entre 1 et 4.
+
+```{r, echo=FALSE}
+p=1:4
+q=1:4
+n=length(spread_ts)
+aic_matrix=matrix(0, nrow = length(p), ncol = length(q))
+bic_matrix=matrix(0, nrow = length(p), ncol = length(q))
+qic_matrix=matrix(0, nrow = length(p), ncol = length(q))
+for (i in 1:length(p)) {
+  for (j in 1:length(q)) {
+    model=arima(spread_diff, order = c(p[i], 1, q[j]))
+    log_likelihood <- logLik(model)
+    k=i+j+1
+    aic_matrix[i,j]=2*k-2*log_likelihood
+    bic_matrix[i,j]=-2 * log_likelihood + k * log(n)
+    qic_matrix[i,j]=-2*log_likelihood+2*k*log(log(n))
+  }
+}
+aic_matrix
+bic_matrix
+qic_matrix
+min_index_aic <- which(aic_matrix == min(aic_matrix), arr.ind = TRUE)
+min_index_bic <- which(bic_matrix == min(bic_matrix), arr.ind = TRUE)
+min_index_qic <- which(qic_matrix == min(qic_matrix), arr.ind = TRUE)
+
+AIC_p <- p[min_index_aic[1]]
+AIC_q <- q[min_index_aic[2]]
+BIC_p <- p[min_index_bic[1]]
+BIC_q <- q[min_index_bic[2]]
+QIC_p <- p[min_index_qic[1]]
+QIC_q <- q[min_index_qic[2]]
+print(paste("Optimal AIC - p:", AIC_p, "q:", AIC_q))
+print(paste("Optimal BIC - p:", BIC_p, "q:", BIC_q))
+print(paste("Optimal QIC - p:",QIC_p, "q:", QIC_q))
+```
+
+On va donc modéliser notre série sous la forme d'un ARMA(2,4).
+
+```{r, echo=FALSE}
+model_spread <- arima(spread_ts, order = c(2, 1, 4))
+spread_arma=fitted(model_spread)
+summary(model_spread)
+```
+
+On observe ici un RMSE plutôt faible, cela montre que le model a bien approximé notre série.
+
+```{r, echo=FALSE}
+plot(spread_ts, type = "l", col = "blue", ylab = "Spread Yield", xlab = "Time",main="Observed Vs Predicted Values")
+lines(fitted(model_spread), col = "red")
+legend("topleft", legend = c("Observed", "Predicted Values"), col = c("blue", "red", "green"), lty = 1)
+```
+
+Nous allons maintenant procéder aux tests de qualité: **ditribution normale des résidus, absence d'autocorrélatio, homoscédasticité et stationnarité**.
+
+```{r, echo=FALSE}
+residuals_model <- residuals(model_spread)
+residuals_2=residuals_model*residuals_model
+
+hist(residuals_model, main = "Histogram of Residuals")
+qqnorm(residuals_model)
+qqline(residuals_model)
+
+# Shapiro-Wilk test for normality
+shapiro.test(residuals_model)
+```
+
+On observe que notre histogramme semble correspondre à celui d'une loi normale mais les quantiles extrèmes de nos résidus s'éloignent de ceux d'une loi normale.
+De même, le test de shapiro affiche une p-value très faible donc on rejette le fait que les résidus se comportent comme une loi normale.
+
+```{r, echo=FALSE}
+Box.test(residuals_model, lag=10,type = "Ljung-Box")
+acf(residuals_model,main="Autocorrelation of the residuals")
+```
+
+La p-value du test de Ljung Box est supérieure à 5%, on peut donc conserver le fait qu'il n'y ait pas d'autocorrélation dans les données. Ce fait peut également être vérifier avec l'ACF qui converge rapidement vers 0.
+
+```{r, echo=FALSE}
+test_residuals=ur.df(residuals_model,type="none",selectlags="BIC") 
+summary(test_residuals)
+```
+
+En réalisant le test d'ADF sur les résidus, on trouve une statistique de -21, largement inférieure aux valeurs critiques. On peut donc rejeter Ho et dire que la série des résidus est stationnaire.
+
+Le dernier test à réaliser est celui de l'homoscédasticité des résidus. 
+
+```{r, echo=FALSE}
+acf(residuals_2,main="Autocorrelation of the residuals ²")
+pacf(residuals_2,main="Partial Autocorrelation of the residuals ²")
+```
+
+On observe que la PACF des résidus au ² converge rapidement vers 0 après le lag 1. On va donc estimer un model AR(1) pour le carré des résidus.
+ 
+```{r, echo=FALSE}
+model_ar <- ar(residuals_2, order.max = 1)
+model_ar
+```
+
+Le coef de notre AR est proche de 0, on peut donc dire que les résidus sont homoscédastiques.
+
+De plus nos résidus semblent être bien distribués et à variance constante.
+
+Pour conclure, on peut dire que nos tests de qualité permettent d'assurer la validité du model.
+
+On va finir par la prédiction de valeurs sur 3 mois.
+
+```{r, echo=FALSE}
+forecast_values <- forecast(model_spread, h = 3)
+plot(forecast_values, main = "Forecasts with Confidence Intervals")
+plot(forecast_values, main = "Forecast for Next Three Months", xlim = c(2023, 2025))
+forecast_values$lower
+forecast_values$upper
+```
+
+Nous avons afficher les tableaux des bornes des intervals de confiance
